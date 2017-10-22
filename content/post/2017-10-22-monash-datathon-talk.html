@@ -1,0 +1,370 @@
+---
+title: Monash Datathon Talk
+author: ''
+date:  Mon Oct 23 09:23:58 2017
+slug: monash-datathon-talk
+categories: []
+tags: []
+---
+
+
+
+<div id="problem" class="section level1">
+<h1>Problem</h1>
+<p>Inside Air BnB is set up to highlight dodgy Air BnB operators breaking residential regulations. (<a href="https://legalvision.com.au/is-airbnb-legal-in-australia/" class="uri">https://legalvision.com.au/is-airbnb-legal-in-australia/</a>)</p>
+<p>Let’s assume we’re a Air BnB operator ruthlessly concerned with profit (and possibly not too concerned with residential regulations) and address the following problem.</p>
+<p>Problem Statement &quot; &quot;</p>
+<p>(Ceteris paribus more occupancy means more profit!)</p>
+<p>Two different questions: “How does average review score affect occupancy rate?”</p>
+<p>“What’s the marginal impact of a single bad review on occupancy rate?”</p>
+<p>We address the former.</p>
+</div>
+<div id="get-the-data" class="section level1">
+<h1>Get the data!</h1>
+<pre class="r"><code>#install.packages(&quot;tidyverse&quot;)
+library(tidyverse)</code></pre>
+<pre><code>## Loading tidyverse: ggplot2
+## Loading tidyverse: tibble
+## Loading tidyverse: tidyr
+## Loading tidyverse: readr
+## Loading tidyverse: purrr
+## Loading tidyverse: dplyr</code></pre>
+<pre><code>## Conflicts with tidy packages ----------------------------------------------</code></pre>
+<pre><code>## filter(): dplyr, stats
+## lag():    dplyr, stats</code></pre>
+<pre class="r"><code># Fetch all data for Melbourne
+# Data linked from http://insideairbnb.com/get-the-data.html
+
+listings &lt;- read_csv(&quot;http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/listings.csv.gz&quot;)</code></pre>
+<pre><code>## Parsed with column specification:
+## cols(
+##   .default = col_character(),
+##   id = col_integer(),
+##   scrape_id = col_double(),
+##   last_scraped = col_date(format = &quot;&quot;),
+##   host_id = col_integer(),
+##   host_since = col_date(format = &quot;&quot;),
+##   host_listings_count = col_integer(),
+##   host_total_listings_count = col_integer(),
+##   zipcode = col_integer(),
+##   latitude = col_double(),
+##   longitude = col_double(),
+##   accommodates = col_integer(),
+##   bathrooms = col_double(),
+##   bedrooms = col_integer(),
+##   beds = col_integer(),
+##   square_feet = col_integer(),
+##   guests_included = col_integer(),
+##   minimum_nights = col_integer(),
+##   maximum_nights = col_integer(),
+##   availability_30 = col_integer(),
+##   availability_60 = col_integer()
+##   # ... with 15 more columns
+## )</code></pre>
+<pre><code>## See spec(...) for full column specifications.</code></pre>
+<pre><code>## Warning in rbind(names(probs), probs_f): number of columns of result is not
+## a multiple of vector length (arg 1)</code></pre>
+<pre><code>## Warning: 7 parsing failures.
+## row # A tibble: 5 x 5 col     row     col               expected   actual expected   &lt;int&gt;   &lt;chr&gt;                  &lt;chr&gt;    &lt;chr&gt; actual 1  3928 zipcode             an integer VIC 3161 file 2  4131 zipcode             an integer VIC 3161 row 3  7802 zipcode             an integer VIC 3183 col 4 11138 zipcode no trailing characters &quot;\n3000&quot; expected 5 12221 zipcode no trailing characters &quot;\n3000&quot; actual # ... with 1 more variables: file &lt;chr&gt;
+## ... ................. ... ............................................... ........ ............................................... ...... ............................................... .... ............................................... ... ............................................... ... ............................................... ........ ............................................... ...... .......................................
+## See problems(...) for more details.</code></pre>
+<pre class="r"><code>#reviews &lt;- read_csv(&quot;http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/reviews.csv.gz&quot;)
+# calendar &lt;- read_csv(&quot;http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/calendar.csv.gz&quot;)
+head(listings)</code></pre>
+<pre><code>## # A tibble: 6 x 95
+##         id                           listing_url   scrape_id last_scraped
+##      &lt;int&gt;                                 &lt;chr&gt;       &lt;dbl&gt;       &lt;date&gt;
+## 1 17948917 https://www.airbnb.com/rooms/17948917 2.01704e+13   2017-04-03
+## 2 17816991 https://www.airbnb.com/rooms/17816991 2.01704e+13   2017-04-03
+## 3  4287875  https://www.airbnb.com/rooms/4287875 2.01704e+13   2017-04-04
+## 4 17797801 https://www.airbnb.com/rooms/17797801 2.01704e+13   2017-04-03
+## 5 17797773 https://www.airbnb.com/rooms/17797773 2.01704e+13   2017-04-04
+## 6 17547269 https://www.airbnb.com/rooms/17547269 2.01704e+13   2017-04-03
+## # ... with 91 more variables: name &lt;chr&gt;, summary &lt;chr&gt;, space &lt;chr&gt;,
+## #   description &lt;chr&gt;, experiences_offered &lt;chr&gt;,
+## #   neighborhood_overview &lt;chr&gt;, notes &lt;chr&gt;, transit &lt;chr&gt;, access &lt;chr&gt;,
+## #   interaction &lt;chr&gt;, house_rules &lt;chr&gt;, thumbnail_url &lt;chr&gt;,
+## #   medium_url &lt;chr&gt;, picture_url &lt;chr&gt;, xl_picture_url &lt;chr&gt;,
+## #   host_id &lt;int&gt;, host_url &lt;chr&gt;, host_name &lt;chr&gt;, host_since &lt;date&gt;,
+## #   host_location &lt;chr&gt;, host_about &lt;chr&gt;, host_response_time &lt;chr&gt;,
+## #   host_response_rate &lt;chr&gt;, host_acceptance_rate &lt;chr&gt;,
+## #   host_is_superhost &lt;chr&gt;, host_thumbnail_url &lt;chr&gt;,
+## #   host_picture_url &lt;chr&gt;, host_neighbourhood &lt;chr&gt;,
+## #   host_listings_count &lt;int&gt;, host_total_listings_count &lt;int&gt;,
+## #   host_verifications &lt;chr&gt;, host_has_profile_pic &lt;chr&gt;,
+## #   host_identity_verified &lt;chr&gt;, street &lt;chr&gt;, neighbourhood &lt;chr&gt;,
+## #   neighbourhood_cleansed &lt;chr&gt;, neighbourhood_group_cleansed &lt;chr&gt;,
+## #   city &lt;chr&gt;, state &lt;chr&gt;, zipcode &lt;int&gt;, market &lt;chr&gt;,
+## #   smart_location &lt;chr&gt;, country_code &lt;chr&gt;, country &lt;chr&gt;,
+## #   latitude &lt;dbl&gt;, longitude &lt;dbl&gt;, is_location_exact &lt;chr&gt;,
+## #   property_type &lt;chr&gt;, room_type &lt;chr&gt;, accommodates &lt;int&gt;,
+## #   bathrooms &lt;dbl&gt;, bedrooms &lt;int&gt;, beds &lt;int&gt;, bed_type &lt;chr&gt;,
+## #   amenities &lt;chr&gt;, square_feet &lt;int&gt;, price &lt;chr&gt;, weekly_price &lt;chr&gt;,
+## #   monthly_price &lt;chr&gt;, security_deposit &lt;chr&gt;, cleaning_fee &lt;chr&gt;,
+## #   guests_included &lt;int&gt;, extra_people &lt;chr&gt;, minimum_nights &lt;int&gt;,
+## #   maximum_nights &lt;int&gt;, calendar_updated &lt;chr&gt;, has_availability &lt;chr&gt;,
+## #   availability_30 &lt;int&gt;, availability_60 &lt;int&gt;, availability_90 &lt;int&gt;,
+## #   availability_365 &lt;int&gt;, calendar_last_scraped &lt;date&gt;,
+## #   number_of_reviews &lt;int&gt;, first_review &lt;date&gt;, last_review &lt;date&gt;,
+## #   review_scores_rating &lt;int&gt;, review_scores_accuracy &lt;int&gt;,
+## #   review_scores_cleanliness &lt;int&gt;, review_scores_checkin &lt;int&gt;,
+## #   review_scores_communication &lt;int&gt;, review_scores_location &lt;int&gt;,
+## #   review_scores_value &lt;int&gt;, requires_license &lt;chr&gt;, license &lt;chr&gt;,
+## #   jurisdiction_names &lt;chr&gt;, instant_bookable &lt;chr&gt;,
+## #   cancellation_policy &lt;chr&gt;, require_guest_profile_picture &lt;chr&gt;,
+## #   require_guest_phone_verification &lt;chr&gt;,
+## #   calculated_host_listings_count &lt;int&gt;, reviews_per_month &lt;dbl&gt;</code></pre>
+<pre class="r"><code># head(reviews)</code></pre>
+</div>
+<div id="define-the-problem" class="section level1">
+<h1>Define the problem</h1>
+<p>No occupancy rate column!</p>
+<p>How do we define occupancy rate?</p>
+<p>Initial guess: Reviews per month / Availability(30). (how many days of the last 30 was this listing available?)</p>
+<pre class="r"><code>listings_with_occupancy_rate &lt;- listings %&gt;% 
+  replace_na(list(reviews_per_month = 0)) %&gt;%
+  mutate(occupancy_rate = reviews_per_month/availability_30)
+
+summary(listings_with_occupancy_rate$occupancy_rate)</code></pre>
+<pre><code>##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA&#39;s 
+##  0.0000  0.0273  0.1485     Inf  1.2722     Inf    1353</code></pre>
+<pre class="r"><code>arrange(listings_with_occupancy_rate, desc(occupancy_rate)) %&gt;% 
+  select(reviews_per_month, availability_30)</code></pre>
+<pre><code>## # A tibble: 14,305 x 2
+##    reviews_per_month availability_30
+##                &lt;dbl&gt;           &lt;int&gt;
+##  1              4.74               0
+##  2              0.45               0
+##  3              0.03               0
+##  4              0.15               0
+##  5              0.56               0
+##  6              0.23               0
+##  7              1.97               0
+##  8              3.06               0
+##  9              0.44               0
+## 10              1.06               0
+## # ... with 14,295 more rows</code></pre>
+<p>Try reviews per month / 30?</p>
+<pre class="r"><code>listings_with_occupancy_rate &lt;- listings %&gt;% 
+  replace_na(list(reviews_per_month = 0)) %&gt;%
+  mutate(occupancy_rate = reviews_per_month / 30)
+
+summary(listings_with_occupancy_rate$occupancy_rate)</code></pre>
+<pre><code>##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+## 0.00000 0.00300 0.02433 0.04626 0.06667 2.50900</code></pre>
+<pre class="r"><code>listings_with_occupancy_rate %&gt;% arrange(desc(occupancy_rate))</code></pre>
+<pre><code>## # A tibble: 14,305 x 96
+##          id                           listing_url   scrape_id last_scraped
+##       &lt;int&gt;                                 &lt;chr&gt;       &lt;dbl&gt;       &lt;date&gt;
+##  1  4514076  https://www.airbnb.com/rooms/4514076 2.01704e+13   2017-04-03
+##  2  3140313  https://www.airbnb.com/rooms/3140313 2.01704e+13   2017-04-04
+##  3 13757390 https://www.airbnb.com/rooms/13757390 2.01704e+13   2017-04-04
+##  4  6646213  https://www.airbnb.com/rooms/6646213 2.01704e+13   2017-04-04
+##  5 17307528 https://www.airbnb.com/rooms/17307528 2.01704e+13   2017-04-03
+##  6 16900867 https://www.airbnb.com/rooms/16900867 2.01704e+13   2017-04-03
+##  7 17345588 https://www.airbnb.com/rooms/17345588 2.01704e+13   2017-04-03
+##  8 13014154 https://www.airbnb.com/rooms/13014154 2.01704e+13   2017-04-03
+##  9  4483725  https://www.airbnb.com/rooms/4483725 2.01704e+13   2017-04-04
+## 10  5552321  https://www.airbnb.com/rooms/5552321 2.01704e+13   2017-04-03
+## # ... with 14,295 more rows, and 92 more variables: name &lt;chr&gt;,
+## #   summary &lt;chr&gt;, space &lt;chr&gt;, description &lt;chr&gt;,
+## #   experiences_offered &lt;chr&gt;, neighborhood_overview &lt;chr&gt;, notes &lt;chr&gt;,
+## #   transit &lt;chr&gt;, access &lt;chr&gt;, interaction &lt;chr&gt;, house_rules &lt;chr&gt;,
+## #   thumbnail_url &lt;chr&gt;, medium_url &lt;chr&gt;, picture_url &lt;chr&gt;,
+## #   xl_picture_url &lt;chr&gt;, host_id &lt;int&gt;, host_url &lt;chr&gt;, host_name &lt;chr&gt;,
+## #   host_since &lt;date&gt;, host_location &lt;chr&gt;, host_about &lt;chr&gt;,
+## #   host_response_time &lt;chr&gt;, host_response_rate &lt;chr&gt;,
+## #   host_acceptance_rate &lt;chr&gt;, host_is_superhost &lt;chr&gt;,
+## #   host_thumbnail_url &lt;chr&gt;, host_picture_url &lt;chr&gt;,
+## #   host_neighbourhood &lt;chr&gt;, host_listings_count &lt;int&gt;,
+## #   host_total_listings_count &lt;int&gt;, host_verifications &lt;chr&gt;,
+## #   host_has_profile_pic &lt;chr&gt;, host_identity_verified &lt;chr&gt;,
+## #   street &lt;chr&gt;, neighbourhood &lt;chr&gt;, neighbourhood_cleansed &lt;chr&gt;,
+## #   neighbourhood_group_cleansed &lt;chr&gt;, city &lt;chr&gt;, state &lt;chr&gt;,
+## #   zipcode &lt;int&gt;, market &lt;chr&gt;, smart_location &lt;chr&gt;, country_code &lt;chr&gt;,
+## #   country &lt;chr&gt;, latitude &lt;dbl&gt;, longitude &lt;dbl&gt;,
+## #   is_location_exact &lt;chr&gt;, property_type &lt;chr&gt;, room_type &lt;chr&gt;,
+## #   accommodates &lt;int&gt;, bathrooms &lt;dbl&gt;, bedrooms &lt;int&gt;, beds &lt;int&gt;,
+## #   bed_type &lt;chr&gt;, amenities &lt;chr&gt;, square_feet &lt;int&gt;, price &lt;chr&gt;,
+## #   weekly_price &lt;chr&gt;, monthly_price &lt;chr&gt;, security_deposit &lt;chr&gt;,
+## #   cleaning_fee &lt;chr&gt;, guests_included &lt;int&gt;, extra_people &lt;chr&gt;,
+## #   minimum_nights &lt;int&gt;, maximum_nights &lt;int&gt;, calendar_updated &lt;chr&gt;,
+## #   has_availability &lt;chr&gt;, availability_30 &lt;int&gt;, availability_60 &lt;int&gt;,
+## #   availability_90 &lt;int&gt;, availability_365 &lt;int&gt;,
+## #   calendar_last_scraped &lt;date&gt;, number_of_reviews &lt;int&gt;,
+## #   first_review &lt;date&gt;, last_review &lt;date&gt;, review_scores_rating &lt;int&gt;,
+## #   review_scores_accuracy &lt;int&gt;, review_scores_cleanliness &lt;int&gt;,
+## #   review_scores_checkin &lt;int&gt;, review_scores_communication &lt;int&gt;,
+## #   review_scores_location &lt;int&gt;, review_scores_value &lt;int&gt;,
+## #   requires_license &lt;chr&gt;, license &lt;chr&gt;, jurisdiction_names &lt;chr&gt;,
+## #   instant_bookable &lt;chr&gt;, cancellation_policy &lt;chr&gt;,
+## #   require_guest_profile_picture &lt;chr&gt;,
+## #   require_guest_phone_verification &lt;chr&gt;,
+## #   calculated_host_listings_count &lt;int&gt;, reviews_per_month &lt;dbl&gt;,
+## #   occupancy_rate &lt;dbl&gt;</code></pre>
+<p>This is hard!</p>
+<p>Use the san fransisco model <a href="http://insideairbnb.com/about.html" class="uri">http://insideairbnb.com/about.html</a></p>
+<pre class="r"><code>avg_length_of_stay &lt;- 3
+review_rate &lt;- 0.5
+upper_bound &lt;- 0.7 # &quot;This controls for situations where an Airbnb host might change their minimum nights during the high season, without the review data having a chance to catch up; or for a listing with a very high review rate.&quot;
+
+
+listings_with_occupancy_rate &lt;- listings %&gt;% 
+  replace_na(list(reviews_per_month = 0)) %&gt;%
+  mutate(days_occupied = (reviews_per_month/review_rate)*avg_length_of_stay) %&gt;%
+  mutate(occupancy_rate = pmin(days_occupied / 30, 0.7))
+
+
+summary(listings_with_occupancy_rate$occupancy_rate)</code></pre>
+<pre><code>##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+##   0.000   0.018   0.146   0.236   0.400   0.700</code></pre>
+<pre class="r"><code>hist(listings_with_occupancy_rate$occupancy_rate)</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-5-1.png" width="672" /></p>
+<p>Lesson: Ruthlessly exploit domain experts whenever possible!</p>
+</div>
+<div id="come-up-with-a-model" class="section level1">
+<h1>Come up with a model</h1>
+<p>Occupancy Rate ~ price + review_score, broken down by neighbourhood.</p>
+<p>(Note: There may be other factors)</p>
+<p>We want to use linear regression, however…</p>
+<pre class="r"><code>hist(listings_with_occupancy_rate$occupancy_rate)</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-6-1.png" width="672" /></p>
+<pre class="r"><code># Looking at days_occupied...
+ggplot(listings_with_occupancy_rate, aes(x = days_occupied)) +
+  geom_histogram(binwidth = 3) +
+  xlim(0,50)</code></pre>
+<pre><code>## Warning: Removed 77 rows containing non-finite values (stat_bin).</code></pre>
+<pre><code>## Warning: Removed 1 rows containing missing values (geom_bar).</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-6-2.png" width="672" /></p>
+<p>A power law!</p>
+<p>Occupancy rate is not normally distributed! (Linear Regression requires our variables be normally distributed)</p>
+<p>Let’s try a log transformation</p>
+<pre class="r"><code>hist(log(listings_with_occupancy_rate$days_occupied))</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-7-1.png" width="672" /></p>
+<p>looks roughly normal!</p>
+<p>Revised model:</p>
+<p>log(days_occupied) ~ price + review_score</p>
+</div>
+<div id="wrangle-our-data" class="section level1">
+<h1>Wrangle our data</h1>
+<p>Remove missing data and define our explanatory variables.</p>
+<pre class="r"><code>listings_clean &lt;- listings_with_occupancy_rate %&gt;% 
+  # Filter out houses with zero reviews
+  filter(days_occupied &gt; 0) %&gt;%
+  # Take log transformation to satisfy normality
+  mutate(log_days_occupied = log(days_occupied))
+
+# Compute standardised price
+listings_clean &lt;- listings_clean %&gt;%
+  mutate(price_numeric = readr::parse_number(price)) %&gt;%
+  replace_na(list(beds = 1)) %&gt;% # Assume 1 bed if unlisted 
+  mutate(price_per_bed_per_day = (price_numeric / beds)/minimum_nights) %&gt;%
+  group_by(city) %&gt;%
+  mutate(neighbourhood_price = (price_per_bed_per_day - mean(price_per_bed_per_day))) %&gt;%
+  mutate(standardized_price = neighbourhood_price/sd(price_per_bed_per_day)) %&gt;%
+  mutate(std_price = ifelse(is.na(standardized_price), neighbourhood_price, standardized_price)) # handle the case where n = 1
+ 
+summary(listings_clean$std_price)</code></pre>
+<pre><code>##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+## -2.0788 -0.6846 -0.1981  0.0000  0.4782  9.8991</code></pre>
+<pre class="r"><code># Standardize review score 
+qplot(listings_clean$review_scores_rating, binwidth = 1)</code></pre>
+<pre><code>## Warning: Removed 132 rows containing non-finite values (stat_bin).</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-8-1.png" width="672" /></p>
+<pre class="r"><code>listings_clean &lt;- listings_clean %&gt;%
+  filter(!is.na(review_scores_rating)) %&gt;%
+  mutate(good_reviews = review_scores_rating &gt; 80)
+
+qplot(listings_clean$price_numeric, binwidth = 1) + 
+  xlim(c(1,1000))</code></pre>
+<pre><code>## Warning: Removed 5 rows containing non-finite values (stat_bin).</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-8-2.png" width="672" /></p>
+<pre class="r"><code># Remove unnecessary columns
+listings_clean &lt;- select(listings_clean, good_reviews, std_price, city, log_days_occupied) %&gt;% ungroup()</code></pre>
+<pre class="r"><code># install.packages(&quot;GGally&quot;)
+library(GGally)</code></pre>
+<pre><code>## 
+## Attaching package: &#39;GGally&#39;</code></pre>
+<pre><code>## The following object is masked from &#39;package:dplyr&#39;:
+## 
+##     nasa</code></pre>
+<pre class="r"><code>listings_clean %&gt;% ungroup() %&gt;% select(-city) %&gt;%
+  ggpairs()</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-9-1.png" width="672" /></p>
+<p>Lessons: * Define your variables carefully * Break things down into very simple steps * Use good diagnostic tools (e.g. summary, histograms) * Don’t assume groups have n &gt; 1</p>
+</div>
+<div id="fit-a-model" class="section level1">
+<h1>Fit a model</h1>
+<pre class="r"><code>#install.packages(&quot;broom&quot;)
+
+library(broom)
+overall_model &lt;- lm(log_days_occupied ~ std_price + good_reviews, data = 
+                      listings_clean)
+
+summary(overall_model)</code></pre>
+<pre><code>## 
+## Call:
+## lm(formula = log_days_occupied ~ std_price + good_reviews, data = listings_clean)
+## 
+## Residuals:
+##     Min      1Q  Median      3Q     Max 
+## -4.1658 -0.7449  0.1300  0.8993  4.2594 
+## 
+## Coefficients:
+##                  Estimate Std. Error t value Pr(&gt;|t|)    
+## (Intercept)       0.70965    0.04092  17.343  &lt; 2e-16 ***
+## std_price         0.08019    0.01123   7.141 9.85e-13 ***
+## good_reviewsTRUE  1.17354    0.04248  27.626  &lt; 2e-16 ***
+## ---
+## Signif. codes:  0 &#39;***&#39; 0.001 &#39;**&#39; 0.01 &#39;*&#39; 0.05 &#39;.&#39; 0.1 &#39; &#39; 1
+## 
+## Residual standard error: 1.157 on 11088 degrees of freedom
+## Multiple R-squared:  0.0688, Adjusted R-squared:  0.06864 
+## F-statistic: 409.6 on 2 and 11088 DF,  p-value: &lt; 2.2e-16</code></pre>
+<pre class="r"><code>regressions &lt;- listings_clean %&gt;% group_by(city) %&gt;%
+  do(fit = lm(log_days_occupied ~ std_price + good_reviews, data = .))
+
+regressions_tidy &lt;- regressions %&gt;% tidy(fit)
+
+regressions_tidy</code></pre>
+<pre><code>## # A tibble: 965 x 6
+## # Groups:   city [457]
+##                                                city             term
+##                                               &lt;chr&gt;            &lt;chr&gt;
+##  1                         &lt;U+5357&gt;&lt;U+96C5&gt;&lt;U+62C9&gt;      (Intercept)
+##  2                         &lt;U+58A8&gt;&lt;U+5C14&gt;&lt;U+672C&gt;      (Intercept)
+##  3                         &lt;U+58A8&gt;&lt;U+5C14&gt;&lt;U+672C&gt;        std_price
+##  4                         &lt;U+5A01&gt;&lt;U+84DD&gt;&lt;U+753A&gt;      (Intercept)
+##  5 &lt;U+8292&gt;&lt;U+7279&gt;&lt;U+97E6&gt;&lt;U+5F17&gt;&lt;U+5229&gt;&lt;U+533A&gt;      (Intercept)
+##  6                                       Abbotsford      (Intercept)
+##  7                                       Abbotsford        std_price
+##  8                                       Abbotsford good_reviewsTRUE
+##  9                            Abbotsford, Melbourne      (Intercept)
+## 10                                     Airport West      (Intercept)
+## # ... with 955 more rows, and 4 more variables: estimate &lt;dbl&gt;,
+## #   std.error &lt;dbl&gt;, statistic &lt;dbl&gt;, p.value &lt;dbl&gt;</code></pre>
+<pre class="r"><code>regressions_tidy %&gt;% filter(term == &quot;good_reviewsTRUE&quot;) %&gt;%
+  ggplot(aes(x = estimate)) + 
+  geom_histogram(binwidth =  0.1) + 
+  scale_x_continuous(limits = c(0,3))</code></pre>
+<pre><code>## Warning: Removed 26 rows containing non-finite values (stat_bin).</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-10-1.png" width="672" /></p>
+<pre class="r"><code>regressions_tidy %&gt;% filter(term == &quot;good_reviewsTRUE&quot;) %&gt;%
+  ggplot(aes(x = p.value)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(xintercept = 0.05)</code></pre>
+<pre><code>## Warning: Removed 7 rows containing non-finite values (stat_bin).</code></pre>
+<p><img src="/post/2017-10-22-monash-datathon-talk_files/figure-html/unnamed-chunk-10-2.png" width="672" /> # Interpretation</p>
+<p>Great p value! Having a crummy average review score could really damange your occupancy rate! (log(days_occupied) - 1.1 = days_occupied/exp(1.1))</p>
+<p>Lousy R-Squared (Neither price nor review score are the whole story)</p>
+<p>What accounts for the other 93% of variation?</p>
+<pre class="r"><code>city_sse &lt;- listings_clean %&gt;% group_by(city) %&gt;% summarise(sse = var(log_days_occupied) * n()) %&gt;% summarise(sse = sum(sse,na.rm=T)) %&gt;% pull(sse)
+
+total_sse &lt;- var(listings_clean$log_days_occupied) * length(listings_clean$log_days_occupied)
+
+
+total_sse</code></pre>
+<pre><code>## [1] 15948.41</code></pre>
+<pre class="r"><code>city_sse</code></pre>
+<pre><code>## [1] 14381.27</code></pre>
+</div>

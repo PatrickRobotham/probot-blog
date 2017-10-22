@@ -1,0 +1,386 @@
+---
+title: A/B testing Stan Talk
+author: ''
+date:  Mon Oct 23 08:23:58 2017
+slug: a-b-testing-stan-talk
+categories: []
+tags: []
+---
+
+
+
+<ul>
+<li>Overview of the problem</li>
+<li><p>Example of real snowplow data</p></li>
+<li>Jensen’s inequality.</li>
+<li><p>Contrived Example</p></li>
+</ul>
+<pre class="r"><code>library(tidyverse)</code></pre>
+<pre><code>## Loading tidyverse: ggplot2
+## Loading tidyverse: tibble
+## Loading tidyverse: tidyr
+## Loading tidyverse: readr
+## Loading tidyverse: purrr
+## Loading tidyverse: dplyr</code></pre>
+<pre><code>## Conflicts with tidy packages ----------------------------------------------</code></pre>
+<pre><code>## filter(): dplyr, stats
+## lag():    dplyr, stats</code></pre>
+<pre class="r"><code>library(rstan)</code></pre>
+<pre><code>## Warning: package &#39;rstan&#39; was built under R version 3.4.2</code></pre>
+<pre><code>## Loading required package: StanHeaders</code></pre>
+<pre><code>## rstan (Version 2.16.2, packaged: 2017-07-03 09:24:58 UTC, GitRev: 2e1f913d3ca3)</code></pre>
+<pre><code>## For execution on a local, multicore CPU with excess RAM we recommend calling
+## rstan_options(auto_write = TRUE)
+## options(mc.cores = parallel::detectCores())</code></pre>
+<pre><code>## 
+## Attaching package: &#39;rstan&#39;</code></pre>
+<pre><code>## The following object is masked from &#39;package:tidyr&#39;:
+## 
+##     extract</code></pre>
+<pre class="r"><code>experiments &lt;- tribble(
+  ~experiment, ~users_allocated,
+  &quot;Colour Scheme&quot;, 400000,
+  &quot;New Checkout&quot;,  1000000
+)
+
+experiment_variants &lt;- tribble(
+  ~experiment, ~experiment_variant, ~prop_allocated,
+  &quot;Colour Scheme&quot;, &quot;Dark&quot;, 0.5,
+  &quot;Colour Scheme&quot;, &quot;Light&quot;, 0.5,
+  &quot;New Checkout&quot;, &quot;New&quot;, 0.3, # Don&#39;t have to A/B test with 50/50
+  &quot;New Checkout&quot;, &quot;Old&quot;, 0.7
+)
+
+mkt_sources &lt;- tribble(
+  ~mkt_source, ~mkt_prop,
+  &quot;Display Ad&quot;, 0.4,
+  &quot;Email&quot;, 0.1,
+  &quot;Direct&quot;, 0.5
+)
+
+device_types &lt;- tribble(
+  ~device_type, ~dev_prop,
+  &quot;Mobile&quot;, 0.3,
+  &quot;Desktop&quot;, 0.7
+)
+
+test_data &lt;- experiment_variants %&gt;%
+  merge(experiments) %&gt;%
+  merge(mkt_sources) %&gt;%
+  merge(device_types) %&gt;%
+  mutate(exp_condition = paste(experiment, experiment_variant, sep = &quot; | &quot;)) %&gt;%
+  mutate(users = round(users_allocated * prop_allocated * mkt_prop * dev_prop)) %&gt;%
+  mutate(base_conversion_rate = 0.01) %&gt;%
+  mutate(mkt_multiplier = case_when(
+    mkt_source == &quot;Email&quot;  ~ 2,
+    mkt_source == &quot;Display Ad&quot; ~ 0.5,
+    TRUE ~ 1
+    )) %&gt;%
+  mutate(experiment_multiplier = case_when(
+    # Images used white instead of transparent background
+    exp_condition == &quot;Colour Scheme | Dark&quot; ~ 0.4, 
+    # None of the devs have an Android -&gt; bugs
+    exp_condition == &quot;New Checkout | New&quot; &amp; device_type == &quot;Mobile&quot; ~ 0.8,
+    exp_condition == &quot;New Checkout | New&quot; ~ 1.5,
+    TRUE ~ 1
+    )) %&gt;%
+  mutate(conversion_rate  = base_conversion_rate * mkt_multiplier * experiment_multiplier) %&gt;%
+  mutate(sales = rbinom(n = n(), size = users, prob = conversion_rate)) %&gt;%
+  select(exp_condition, mkt_source, device_type, users, sales)
+
+test_data</code></pre>
+<pre><code>##            exp_condition mkt_source device_type  users sales
+## 1   Colour Scheme | Dark Display Ad      Mobile  24000    51
+## 2  Colour Scheme | Light Display Ad      Mobile  24000   110
+## 3     New Checkout | New Display Ad      Mobile  36000   138
+## 4     New Checkout | Old Display Ad      Mobile  84000   430
+## 5   Colour Scheme | Dark      Email      Mobile   6000    47
+## 6  Colour Scheme | Light      Email      Mobile   6000   107
+## 7     New Checkout | New      Email      Mobile   9000   133
+## 8     New Checkout | Old      Email      Mobile  21000   455
+## 9   Colour Scheme | Dark     Direct      Mobile  30000   107
+## 10 Colour Scheme | Light     Direct      Mobile  30000   314
+## 11    New Checkout | New     Direct      Mobile  45000   384
+## 12    New Checkout | Old     Direct      Mobile 105000  1056
+## 13  Colour Scheme | Dark Display Ad     Desktop  56000   110
+## 14 Colour Scheme | Light Display Ad     Desktop  56000   300
+## 15    New Checkout | New Display Ad     Desktop  84000   583
+## 16    New Checkout | Old Display Ad     Desktop 196000   958
+## 17  Colour Scheme | Dark      Email     Desktop  14000   116
+## 18 Colour Scheme | Light      Email     Desktop  14000   293
+## 19    New Checkout | New      Email     Desktop  21000   696
+## 20    New Checkout | Old      Email     Desktop  49000  1016
+## 21  Colour Scheme | Dark     Direct     Desktop  70000   277
+## 22 Colour Scheme | Light     Direct     Desktop  70000   692
+## 23    New Checkout | New     Direct     Desktop 105000  1549
+## 24    New Checkout | Old     Direct     Desktop 245000  2454</code></pre>
+<ul>
+<li>Stan Model</li>
+</ul>
+<pre class="stan"><code>// Following http://data.princeton.edu/pop510/hospStan.html
+
+data{
+  int&lt;lower = 0&gt; N; // number of rows
+  int&lt;lower = 0&gt; D; // number of device_types
+  int&lt;lower = 0&gt; E; // number of experiment_conditions
+  int&lt;lower = 0&gt; M; // number of mkt_sources
+  
+  int sales[N];
+  int users[N];
+  
+  int ec[N];        // maps obs to experiment_conditions
+  int mkt[N];       // maps obs to mkt_sources
+  int dvc[N];       // maps obs to device_types
+ }
+
+parameters{
+  real alpha;
+  real experiment_effect[E];
+  real device_effect[D];
+  real market_effect[M];
+  real experiment_market_interaction[E,M];
+  real experiment_device_interaction[E,D];
+  real experiment_market_device_interaction[E,M,D];
+  
+}
+
+transformed parameters{
+  real conv_rate[N];
+  for (n in 1:N){
+    conv_rate[n] = inv_logit(
+        alpha +
+        experiment_effect[ec[n]] +
+        market_effect[mkt[n]] + 
+        device_effect[dvc[n]] +
+        experiment_market_interaction[ec[n],mkt[n]] +
+        experiment_device_interaction[ec[n],dvc[n]] +
+        experiment_market_device_interaction[ec[n],mkt[n],dvc[n]]
+    );
+  }
+}
+
+model{
+    // weakly informative priors
+    alpha ~ normal(0, 10);
+    experiment_effect ~ normal(0,10);
+    device_effect ~ normal(0, 10);
+    market_effect ~ normal(0,10);
+    
+    for(i in 1:E){
+      for(d in 1:D) {
+        for(m in 1:M) {
+          experiment_market_interaction[i,m] ~ normal(0,5);
+          experiment_device_interaction[i,d] ~ normal(0,5);
+          experiment_market_device_interaction[i,m,d] ~ normal(0, 1);
+        }
+      }
+    }
+    
+    sales ~ binomial(users,conv_rate);
+}
+
+generated quantities {
+ int predicted_sales[N];
+ 
+ for(i in 1:N){
+   predicted_sales[i] = binomial_rng(users[i], conv_rate[i]); // beware Jensen&#39;s Inequality
+ }
+}</code></pre>
+<pre class="r"><code>fit &lt;-  sampling(ab_test_model, 
+         data = list(
+           N = nrow(test_data),
+           D = n_distinct(test_data$device_type),
+           M = n_distinct(test_data$mkt_source),
+           E = n_distinct(test_data$exp_condition),
+           sales = test_data$sales,
+           users = test_data$users,
+           ec = as.integer(factor(test_data$exp_condition)),
+           mkt = as.integer(factor(test_data$mkt_source)),
+           dvc = as.integer(factor(test_data$device_type))
+           ))</code></pre>
+<pre><code>## 
+## SAMPLING FOR MODEL &#39;7b8b88abd3c47938bc0c82dd29fe7aaa&#39; NOW (CHAIN 1).
+## 
+## Gradient evaluation took 0 seconds
+## 1000 transitions using 10 leapfrog steps per transition would take 0 seconds.
+## Adjust your expectations accordingly!
+## 
+## 
+## Iteration:    1 / 2000 [  0%]  (Warmup)
+## Iteration:  200 / 2000 [ 10%]  (Warmup)
+## Iteration:  400 / 2000 [ 20%]  (Warmup)
+## Iteration:  600 / 2000 [ 30%]  (Warmup)
+## Iteration:  800 / 2000 [ 40%]  (Warmup)
+## Iteration: 1000 / 2000 [ 50%]  (Warmup)
+## Iteration: 1001 / 2000 [ 50%]  (Sampling)
+## Iteration: 1200 / 2000 [ 60%]  (Sampling)
+## Iteration: 1400 / 2000 [ 70%]  (Sampling)
+## Iteration: 1600 / 2000 [ 80%]  (Sampling)
+## Iteration: 1800 / 2000 [ 90%]  (Sampling)
+## Iteration: 2000 / 2000 [100%]  (Sampling)
+## 
+##  Elapsed Time: 24.92 seconds (Warm-up)
+##                28.434 seconds (Sampling)
+##                53.354 seconds (Total)
+## 
+## 
+## SAMPLING FOR MODEL &#39;7b8b88abd3c47938bc0c82dd29fe7aaa&#39; NOW (CHAIN 2).
+## 
+## Gradient evaluation took 0 seconds
+## 1000 transitions using 10 leapfrog steps per transition would take 0 seconds.
+## Adjust your expectations accordingly!
+## 
+## 
+## Iteration:    1 / 2000 [  0%]  (Warmup)
+## Iteration:  200 / 2000 [ 10%]  (Warmup)
+## Iteration:  400 / 2000 [ 20%]  (Warmup)
+## Iteration:  600 / 2000 [ 30%]  (Warmup)
+## Iteration:  800 / 2000 [ 40%]  (Warmup)
+## Iteration: 1000 / 2000 [ 50%]  (Warmup)
+## Iteration: 1001 / 2000 [ 50%]  (Sampling)
+## Iteration: 1200 / 2000 [ 60%]  (Sampling)
+## Iteration: 1400 / 2000 [ 70%]  (Sampling)
+## Iteration: 1600 / 2000 [ 80%]  (Sampling)
+## Iteration: 1800 / 2000 [ 90%]  (Sampling)
+## Iteration: 2000 / 2000 [100%]  (Sampling)
+## 
+##  Elapsed Time: 24.689 seconds (Warm-up)
+##                26.666 seconds (Sampling)
+##                51.355 seconds (Total)
+## 
+## 
+## SAMPLING FOR MODEL &#39;7b8b88abd3c47938bc0c82dd29fe7aaa&#39; NOW (CHAIN 3).
+## 
+## Gradient evaluation took 0 seconds
+## 1000 transitions using 10 leapfrog steps per transition would take 0 seconds.
+## Adjust your expectations accordingly!
+## 
+## 
+## Iteration:    1 / 2000 [  0%]  (Warmup)
+## Iteration:  200 / 2000 [ 10%]  (Warmup)
+## Iteration:  400 / 2000 [ 20%]  (Warmup)
+## Iteration:  600 / 2000 [ 30%]  (Warmup)
+## Iteration:  800 / 2000 [ 40%]  (Warmup)
+## Iteration: 1000 / 2000 [ 50%]  (Warmup)
+## Iteration: 1001 / 2000 [ 50%]  (Sampling)
+## Iteration: 1200 / 2000 [ 60%]  (Sampling)
+## Iteration: 1400 / 2000 [ 70%]  (Sampling)
+## Iteration: 1600 / 2000 [ 80%]  (Sampling)
+## Iteration: 1800 / 2000 [ 90%]  (Sampling)
+## Iteration: 2000 / 2000 [100%]  (Sampling)
+## 
+##  Elapsed Time: 24.282 seconds (Warm-up)
+##                25.47 seconds (Sampling)
+##                49.752 seconds (Total)
+## 
+## 
+## SAMPLING FOR MODEL &#39;7b8b88abd3c47938bc0c82dd29fe7aaa&#39; NOW (CHAIN 4).
+## 
+## Gradient evaluation took 0 seconds
+## 1000 transitions using 10 leapfrog steps per transition would take 0 seconds.
+## Adjust your expectations accordingly!
+## 
+## 
+## Iteration:    1 / 2000 [  0%]  (Warmup)
+## Iteration:  200 / 2000 [ 10%]  (Warmup)
+## Iteration:  400 / 2000 [ 20%]  (Warmup)
+## Iteration:  600 / 2000 [ 30%]  (Warmup)
+## Iteration:  800 / 2000 [ 40%]  (Warmup)
+## Iteration: 1000 / 2000 [ 50%]  (Warmup)
+## Iteration: 1001 / 2000 [ 50%]  (Sampling)
+## Iteration: 1200 / 2000 [ 60%]  (Sampling)
+## Iteration: 1400 / 2000 [ 70%]  (Sampling)
+## Iteration: 1600 / 2000 [ 80%]  (Sampling)
+## Iteration: 1800 / 2000 [ 90%]  (Sampling)
+## Iteration: 2000 / 2000 [100%]  (Sampling)
+## 
+##  Elapsed Time: 23.404 seconds (Warm-up)
+##                26.012 seconds (Sampling)
+##                49.416 seconds (Total)</code></pre>
+<pre><code>## Warning: There were 4000 transitions after warmup that exceeded the maximum treedepth. Increase max_treedepth above 10. See
+## http://mc-stan.org/misc/warnings.html#maximum-treedepth-exceeded</code></pre>
+<pre><code>## Warning: Examine the pairs() plot to diagnose sampling problems</code></pre>
+<pre class="r"><code>Estimate &lt;- function(vec){
+  me &lt;- list(
+    samples = vec
+     )
+  
+  class(me) &lt;- append(class(me),&quot;Estimate&quot;)
+  return(me)
+}
+print.Estimate &lt;- function (est){
+  print(summary(est$samples)) 
+}
+format.Estimate &lt;- function(est){
+  format(summary(est$samples))
+}
+
+estimated_sales &lt;- apply(extract(fit)$predicted_sales, 2, Estimate)
+
+report_data &lt;- tbl_df(test_data) %&gt;%
+  mutate(estimated_sales = estimated_sales) %&gt;%
+  mutate(estimated_sales_05 = map_dbl(estimated_sales, 
+                                      function(x){quantile(x$samples,0.05)})) %&gt;%
+  mutate(estimated_sales_mean = map_dbl(estimated_sales,
+                                        function(x){mean(x$samples)})) %&gt;%
+  mutate(estimated_sales_95 = map_dbl(estimated_sales,
+                                      function(x){quantile(x$samples,0.95)}))
+         
+print(report_data %&gt;% select(sales, estimated_sales_05, estimated_sales_mean, estimated_sales_95))</code></pre>
+<pre><code>## # A tibble: 24 x 4
+##    sales estimated_sales_05 estimated_sales_mean estimated_sales_95
+##    &lt;int&gt;              &lt;dbl&gt;                &lt;dbl&gt;              &lt;dbl&gt;
+##  1    51                 36             51.24025                 68
+##  2   110                 86            109.70700                135
+##  3   138                112            138.16175                165
+##  4   430                382            430.16350                480
+##  5    47                 32             47.03325                 63
+##  6   107                 83            107.08550                132
+##  7   133                107            133.05700                161
+##  8   455                407            454.77350                505
+##  9   107                 84            107.22150                132
+## 10   314                274            314.07600                356
+## # ... with 14 more rows</code></pre>
+<pre class="r"><code># Report broken down by device
+experiment_device_report &lt;- report_data %&gt;%
+  group_by(exp_condition, device_type) %&gt;%
+  summarise(users = sum(users), 
+            sales = sum(sales),
+            estimated_sales = reduce(estimated_sales, 
+                                     function(x,y){
+                                       Estimate(x$samples + y$samples)
+                                       })
+  ) %&gt;% 
+  mutate(estimated_sales_lower = map_dbl(estimated_sales, 
+                                      function(x){quantile(x,0.05)})) %&gt;%
+  mutate(estimated_sales_upper = map_dbl(estimated_sales,
+                                      function(x){quantile(x,0.95)})) %&gt;%
+  mutate(conversion_rate = sales/users) %&gt;%
+  mutate(conversion_rate_lower = map_dbl(estimated_sales,
+                                         function(x){quantile(x/users,0.05)})) %&gt;%
+  mutate(conversion_rate_upper = map_dbl(estimated_sales,
+                                         function(x){quantile(x/users,0.95)}))
+
+experiment_device_report    </code></pre>
+<pre><code>## # A tibble: 8 x 10
+## # Groups:   exp_condition [4]
+##           exp_condition device_type  users sales estimated_sales
+##                   &lt;chr&gt;       &lt;chr&gt;  &lt;dbl&gt; &lt;int&gt;          &lt;list&gt;
+## 1  Colour Scheme | Dark     Desktop 140000   503   &lt;dbl [4,000]&gt;
+## 2  Colour Scheme | Dark      Mobile  60000   205   &lt;dbl [4,000]&gt;
+## 3 Colour Scheme | Light     Desktop 140000  1285   &lt;dbl [4,000]&gt;
+## 4 Colour Scheme | Light      Mobile  60000   531   &lt;dbl [4,000]&gt;
+## 5    New Checkout | New     Desktop 210000  2828   &lt;dbl [4,000]&gt;
+## 6    New Checkout | New      Mobile  90000   655   &lt;dbl [4,000]&gt;
+## 7    New Checkout | Old     Desktop 490000  4428   &lt;dbl [4,000]&gt;
+## 8    New Checkout | Old      Mobile 210000  1941   &lt;dbl [4,000]&gt;
+## # ... with 5 more variables: estimated_sales_lower &lt;dbl&gt;,
+## #   estimated_sales_upper &lt;dbl&gt;, conversion_rate &lt;dbl&gt;,
+## #   conversion_rate_lower &lt;dbl&gt;, conversion_rate_upper &lt;dbl&gt;</code></pre>
+<p>WANTED: A “Probabilistic Sample” class with good helper methods. 0▂▃▄▅▅▆▇█0.5▇▆▅▅▄▃▂ 1</p>
+<ul>
+<li><p>VOI Calculations</p></li>
+<li><p>Multi Armed Bandits</p></li>
+<li><p>Peeking</p></li>
+<li><p>Thompson Sampling</p></li>
+</ul>
