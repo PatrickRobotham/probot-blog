@@ -1,0 +1,224 @@
+---
+title: A/B testing Stan Talk
+author: ''
+date: '2017-10-22'
+slug: a-b-testing-stan-talk
+categories: []
+tags: []
+---
+
+
+* Overview of the problem
+* Example of real snowplow data
+
+* Jensen's inequality.
+* Contrived Example
+
+```{r fake_data}
+library(tidyverse)
+library(rstan)
+
+experiments <- tribble(
+  ~experiment, ~users_allocated,
+  "Colour Scheme", 400000,
+  "New Checkout",  1000000
+)
+
+experiment_variants <- tribble(
+  ~experiment, ~experiment_variant, ~prop_allocated,
+  "Colour Scheme", "Dark", 0.5,
+  "Colour Scheme", "Light", 0.5,
+  "New Checkout", "New", 0.3, # Don't have to A/B test with 50/50
+  "New Checkout", "Old", 0.7
+)
+
+mkt_sources <- tribble(
+  ~mkt_source, ~mkt_prop,
+  "Display Ad", 0.4,
+  "Email", 0.1,
+  "Direct", 0.5
+)
+
+device_types <- tribble(
+  ~device_type, ~dev_prop,
+  "Mobile", 0.3,
+  "Desktop", 0.7
+)
+
+test_data <- experiment_variants %>%
+  merge(experiments) %>%
+  merge(mkt_sources) %>%
+  merge(device_types) %>%
+  mutate(exp_condition = paste(experiment, experiment_variant, sep = " | ")) %>%
+  mutate(users = round(users_allocated * prop_allocated * mkt_prop * dev_prop)) %>%
+  mutate(base_conversion_rate = 0.01) %>%
+  mutate(mkt_multiplier = case_when(
+    mkt_source == "Email"  ~ 2,
+    mkt_source == "Display Ad" ~ 0.5,
+    TRUE ~ 1
+    )) %>%
+  mutate(experiment_multiplier = case_when(
+    # Images used white instead of transparent background
+    exp_condition == "Colour Scheme | Dark" ~ 0.4, 
+    # None of the devs have an Android -> bugs
+    exp_condition == "New Checkout | New" & device_type == "Mobile" ~ 0.8,
+    exp_condition == "New Checkout | New" ~ 1.5,
+    TRUE ~ 1
+    )) %>%
+  mutate(conversion_rate  = base_conversion_rate * mkt_multiplier * experiment_multiplier) %>%
+  mutate(sales = rbinom(n = n(), size = users, prob = conversion_rate)) %>%
+  select(exp_condition, mkt_source, device_type, users, sales)
+
+test_data
+```
+* Stan Model
+```{stan stan_model, output.var = "ab_test_model"}
+// Following http://data.princeton.edu/pop510/hospStan.html
+
+data{
+  int<lower = 0> N; // number of rows
+  int<lower = 0> D; // number of device_types
+  int<lower = 0> E; // number of experiment_conditions
+  int<lower = 0> M; // number of mkt_sources
+  
+  int sales[N];
+  int users[N];
+  
+  int ec[N];        // maps obs to experiment_conditions
+  int mkt[N];       // maps obs to mkt_sources
+  int dvc[N];       // maps obs to device_types
+ }
+
+parameters{
+  real alpha;
+  real experiment_effect[E];
+  real device_effect[D];
+  real market_effect[M];
+  real experiment_market_interaction[E,M];
+  real experiment_device_interaction[E,D];
+  real experiment_market_device_interaction[E,M,D];
+  
+}
+
+transformed parameters{
+  real conv_rate[N];
+  for (n in 1:N){
+    conv_rate[n] = inv_logit(
+        alpha +
+        experiment_effect[ec[n]] +
+        market_effect[mkt[n]] + 
+        device_effect[dvc[n]] +
+        experiment_market_interaction[ec[n],mkt[n]] +
+        experiment_device_interaction[ec[n],dvc[n]] +
+        experiment_market_device_interaction[ec[n],mkt[n],dvc[n]]
+    );
+  }
+}
+
+model{
+    // weakly informative priors
+    alpha ~ normal(0, 10);
+    experiment_effect ~ normal(0,10);
+    device_effect ~ normal(0, 10);
+    market_effect ~ normal(0,10);
+    
+    for(i in 1:E){
+      for(d in 1:D) {
+        for(m in 1:M) {
+          experiment_market_interaction[i,m] ~ normal(0,5);
+          experiment_device_interaction[i,d] ~ normal(0,5);
+          experiment_market_device_interaction[i,m,d] ~ normal(0, 1);
+        }
+      }
+    }
+    
+    sales ~ binomial(users,conv_rate);
+}
+
+generated quantities {
+ int predicted_sales[N];
+ 
+ for(i in 1:N){
+   predicted_sales[i] = binomial_rng(users[i], conv_rate[i]); // beware Jensen's Inequality
+ }
+}
+```
+
+
+```{r extract_data}
+fit <-  sampling(ab_test_model, 
+         data = list(
+           N = nrow(test_data),
+           D = n_distinct(test_data$device_type),
+           M = n_distinct(test_data$mkt_source),
+           E = n_distinct(test_data$exp_condition),
+           sales = test_data$sales,
+           users = test_data$users,
+           ec = as.integer(factor(test_data$exp_condition)),
+           mkt = as.integer(factor(test_data$mkt_source)),
+           dvc = as.integer(factor(test_data$device_type))
+           ))
+Estimate <- function(vec){
+  me <- list(
+    samples = vec
+     )
+  
+  class(me) <- append(class(me),"Estimate")
+  return(me)
+}
+print.Estimate <- function (est){
+  print(summary(est$samples)) 
+}
+format.Estimate <- function(est){
+  format(summary(est$samples))
+}
+
+estimated_sales <- apply(extract(fit)$predicted_sales, 2, Estimate)
+
+report_data <- tbl_df(test_data) %>%
+  mutate(estimated_sales = estimated_sales) %>%
+  mutate(estimated_sales_05 = map_dbl(estimated_sales, 
+                                      function(x){quantile(x$samples,0.05)})) %>%
+  mutate(estimated_sales_mean = map_dbl(estimated_sales,
+                                        function(x){mean(x$samples)})) %>%
+  mutate(estimated_sales_95 = map_dbl(estimated_sales,
+                                      function(x){quantile(x$samples,0.95)}))
+         
+print(report_data %>% select(sales, estimated_sales_05, estimated_sales_mean, estimated_sales_95))
+
+# Report broken down by device
+experiment_device_report <- report_data %>%
+  group_by(exp_condition, device_type) %>%
+  summarise(users = sum(users), 
+            sales = sum(sales),
+            estimated_sales = reduce(estimated_sales, 
+                                     function(x,y){
+                                       Estimate(x$samples + y$samples)
+                                       })
+  ) %>% 
+  mutate(estimated_sales_lower = map_dbl(estimated_sales, 
+                                      function(x){quantile(x,0.05)})) %>%
+  mutate(estimated_sales_upper = map_dbl(estimated_sales,
+                                      function(x){quantile(x,0.95)})) %>%
+  mutate(conversion_rate = sales/users) %>%
+  mutate(conversion_rate_lower = map_dbl(estimated_sales,
+                                         function(x){quantile(x/users,0.05)})) %>%
+  mutate(conversion_rate_upper = map_dbl(estimated_sales,
+                                         function(x){quantile(x/users,0.95)}))
+
+experiment_device_report    
+
+
+```
+
+
+WANTED: A "Probabilistic Sample" class with good helper methods.
+0▂▃▄▅▅▆▇█0.5▇▆▅▅▄▃▂ 1 
+
+* VOI Calculations
+
+* Multi Armed Bandits
+
+* Peeking 
+
+* Thompson Sampling
