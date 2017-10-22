@@ -1,0 +1,241 @@
+---
+title: Monash Datathon Talk
+author: ''
+date: '2017-10-22'
+slug: monash-datathon-talk
+categories: []
+tags: []
+---
+
+---
+title: "Modelling Occupancy Rate as a function of review score"
+output: html_notebook
+---
+
+# Problem
+
+Inside Air BnB is set up to highlight dodgy Air BnB operators breaking
+ residential regulations. (https://legalvision.com.au/is-airbnb-legal-in-australia/)
+ 
+Let's assume we're a Air BnB operator ruthlessly concerned with profit (and possibly not too concerned with residential regulations) and address the following problem.
+
+Problem Statement
+" "
+
+(Ceteris paribus more occupancy means more profit!)
+
+Two different questions:
+"How does average review score affect occupancy rate?"
+
+"What's the marginal impact of a single bad review on occupancy rate?" 
+
+We address the former.
+
+# Get the data!
+
+```{r}
+#install.packages("tidyverse")
+library(tidyverse)
+
+# Fetch all data for Melbourne
+# Data linked from http://insideairbnb.com/get-the-data.html
+
+listings <- read_csv("http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/listings.csv.gz")
+#reviews <- read_csv("http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/reviews.csv.gz")
+# calendar <- read_csv("http://data.insideairbnb.com/australia/vic/melbourne/2017-04-03/data/calendar.csv.gz")
+head(listings)
+# head(reviews)
+```
+
+
+
+# Define the problem
+No occupancy rate column!
+
+How do we define occupancy rate?
+
+```{r}
+
+```
+
+
+Initial guess: Reviews per month / Availability(30). 
+(how many days of the last 30 was this listing available?) 
+
+```{r}
+listings_with_occupancy_rate <- listings %>% 
+  replace_na(list(reviews_per_month = 0)) %>%
+  mutate(occupancy_rate = reviews_per_month/availability_30)
+
+summary(listings_with_occupancy_rate$occupancy_rate)
+
+arrange(listings_with_occupancy_rate, desc(occupancy_rate)) %>% 
+  select(reviews_per_month, availability_30)
+```
+
+Try reviews per month / 30?
+
+```{r}
+listings_with_occupancy_rate <- listings %>% 
+  replace_na(list(reviews_per_month = 0)) %>%
+  mutate(occupancy_rate = reviews_per_month / 30)
+
+summary(listings_with_occupancy_rate$occupancy_rate)
+
+listings_with_occupancy_rate %>% arrange(desc(occupancy_rate))
+```
+
+This is hard! 
+
+Use the san fransisco model http://insideairbnb.com/about.html
+
+```{r}
+avg_length_of_stay <- 3
+review_rate <- 0.5
+upper_bound <- 0.7 # "This controls for situations where an Airbnb host might change their minimum nights during the high season, without the review data having a chance to catch up; or for a listing with a very high review rate."
+
+
+listings_with_occupancy_rate <- listings %>% 
+  replace_na(list(reviews_per_month = 0)) %>%
+  mutate(days_occupied = (reviews_per_month/review_rate)*avg_length_of_stay) %>%
+  mutate(occupancy_rate = pmin(days_occupied / 30, 0.7))
+
+
+summary(listings_with_occupancy_rate$occupancy_rate)
+hist(listings_with_occupancy_rate$occupancy_rate)
+```
+
+
+Lesson: Ruthlessly exploit domain experts whenever possible!
+
+
+# Come up with a model
+
+Occupancy Rate ~ price + review_score, broken down by neighbourhood.
+
+(Note: There may be other factors)
+
+
+We want to use linear regression, however...
+```{r}
+hist(listings_with_occupancy_rate$occupancy_rate)
+
+# Looking at days_occupied...
+ggplot(listings_with_occupancy_rate, aes(x = days_occupied)) +
+  geom_histogram(binwidth = 3) +
+  xlim(0,50)
+```
+
+A power law!
+
+Occupancy rate is not normally distributed! 
+(Linear Regression requires our variables be normally distributed)
+
+Let's try a log transformation
+
+```{r}
+hist(log(listings_with_occupancy_rate$days_occupied))
+```
+
+looks roughly normal!
+
+Revised model:
+
+log(days_occupied) ~ price + review_score
+
+# Wrangle our data
+
+
+Remove missing data and define our explanatory variables.
+```{r}
+listings_clean <- listings_with_occupancy_rate %>% 
+  # Filter out houses with zero reviews
+  filter(days_occupied > 0) %>%
+  # Take log transformation to satisfy normality
+  mutate(log_days_occupied = log(days_occupied))
+
+# Compute standardised price
+listings_clean <- listings_clean %>%
+  mutate(price_numeric = readr::parse_number(price)) %>%
+  replace_na(list(beds = 1)) %>% # Assume 1 bed if unlisted 
+  mutate(price_per_bed_per_day = (price_numeric / beds)/minimum_nights) %>%
+  group_by(city) %>%
+  mutate(neighbourhood_price = (price_per_bed_per_day - mean(price_per_bed_per_day))) %>%
+  mutate(standardized_price = neighbourhood_price/sd(price_per_bed_per_day)) %>%
+  mutate(std_price = ifelse(is.na(standardized_price), neighbourhood_price, standardized_price)) # handle the case where n = 1
+ 
+summary(listings_clean$std_price)
+# Standardize review score 
+qplot(listings_clean$review_scores_rating, binwidth = 1)
+
+listings_clean <- listings_clean %>%
+  filter(!is.na(review_scores_rating)) %>%
+  mutate(good_reviews = review_scores_rating > 80)
+
+qplot(listings_clean$price_numeric, binwidth = 1) + 
+  xlim(c(1,1000))
+# Remove unnecessary columns
+listings_clean <- select(listings_clean, good_reviews, std_price, city, log_days_occupied) %>% ungroup()
+```
+
+
+```{r}
+# install.packages("GGally")
+library(GGally)
+listings_clean %>% ungroup() %>% select(-city) %>%
+  ggpairs()
+
+```
+
+Lessons:
+* Define your variables carefully
+* Break things down into very simple steps
+* Use good diagnostic tools (e.g. summary, histograms)
+* Don't assume groups have n > 1
+
+
+# Fit a model
+```{r}
+#install.packages("broom")
+
+library(broom)
+overall_model <- lm(log_days_occupied ~ std_price + good_reviews, data = 
+                      listings_clean)
+
+summary(overall_model)
+regressions <- listings_clean %>% group_by(city) %>%
+  do(fit = lm(log_days_occupied ~ std_price + good_reviews, data = .))
+
+regressions_tidy <- regressions %>% tidy(fit)
+
+regressions_tidy
+regressions_tidy %>% filter(term == "good_reviewsTRUE") %>%
+  ggplot(aes(x = estimate)) + 
+  geom_histogram(binwidth =  0.1) + 
+  scale_x_continuous(limits = c(0,3))
+
+regressions_tidy %>% filter(term == "good_reviewsTRUE") %>%
+  ggplot(aes(x = p.value)) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(xintercept = 0.05)
+```
+# Interpretation
+
+Great p value!
+Having a crummy average review score could really damange your occupancy rate!
+ (log(days_occupied) - 1.1 = days_occupied/exp(1.1))
+
+Lousy R-Squared (Neither price nor review score are the whole story)
+
+What accounts for the other 93% of variation?
+
+
+```{r}
+city_sse <- listings_clean %>% group_by(city) %>% summarise(sse = var(log_days_occupied) * n()) %>% summarise(sse = sum(sse,na.rm=T)) %>% pull(sse)
+
+total_sse <- var(listings_clean$log_days_occupied) * length(listings_clean$log_days_occupied)
+
+
+total_sse
+city_sse
+```
